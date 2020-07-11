@@ -57,6 +57,9 @@ int main()
 			|= simple_receiver([](const test_data& i) { cout << i.i << "\n"; });
 		observable.subscribe(observer);
 		observable.start();
+		observable2.start();
+		observable.unsubscribe();
+		observable2.unsubscribe();
 
 		cout << "Copy: " << copy_counter << "\nMove: " << move_counter << "\n";
 	}
