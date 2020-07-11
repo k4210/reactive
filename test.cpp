@@ -22,7 +22,7 @@ int main()
 			|= group(8)
 			|= last()
 			|= split()
-			|= simple_receiver([](float i) { cout << i << "\n"; });
+			|= observe([](float i) { cout << i << "\n"; });
 
 		observable.subscribe(observer);
 		observable.start();
@@ -47,14 +47,16 @@ int main()
 
 		repeater<test_data> observable(20, {});
 		repeater<test_data> observable2(20, {});
-		auto observer = filter([](const test_data& i) { return i.i == 1; })
-			|= merge(observable2)
+		auto observer_part = merge(observable2)
 			|= accumulate(test_data(), [](const test_data& a, const test_data& b) -> test_data { return test_data(a.i + b.i); })
 			|= take(12)
 			|= group(8)
 			|= last()
 			|= split()
-			|= simple_receiver([](const test_data& i) { cout << i.i << "\n"; });
+			|= observe([](test_data i) { cout << i.i << "\n"; return status::open; });
+		auto observer = filter([](const test_data& i) { return i.i == 1; }) 
+			|= std::move(observer_part);
+
 		observable.subscribe(observer);
 		observable.start();
 		observable2.start();

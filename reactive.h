@@ -370,7 +370,7 @@ namespace reactive
 				std::vector<T> v;
 
 				composite_observer(type_inner_observer&& in_o, unsigned int in_num)
-					: observer(in_o), num(in_num)
+					: observer(std::move(in_o)), num(in_num)
 				{
 					v.reserve(num);
 				}
@@ -435,6 +435,42 @@ namespace reactive
 				return composite_observer<type_inner_observer>{std::move(inner_observer)};
 			}
 		};
+
+		template <typename type_next> struct simple_receiver_imp
+		{
+			type_next next_func;
+
+			using T = typename std::decay< typename details::lambda_first_argument<type_next>::type >::type;
+			status next(T arg)
+			{
+				if constexpr (std::is_same_v<status, decltype(next_func(arg))>)
+				{
+					return next_func(std::forward<T>(arg));
+				}
+				else
+				{
+					next_func(std::forward<T>(arg));
+					return status::open;
+				}
+			}
+			void complete() {}
+
+			simple_receiver_imp(simple_receiver_imp&&) = default;
+			simple_receiver_imp(type_next&& in_next) : next_func(in_next) {}
+		};
+
+		template <typename type_next, typename type_complete> struct receiver_imp : public simple_receiver_imp<type_next>
+		{
+			type_complete complete_func;
+			void complete()
+			{
+				complete_func();
+			}
+
+			receiver_imp(receiver_imp&&) = default;
+			receiver_imp(type_next&& in_next, type_complete&& in_complete)
+				: simple_receiver_imp(in_next), complete_func(in_complete) {}
+		};
 	}
 
 // MODIFIERS
@@ -485,39 +521,20 @@ namespace reactive
 	}
 
 // OBSERVER
-	template <typename type_next, typename type_complete> auto receiver(type_next func_next, type_complete func_complete)
+
+	template <typename type_next, typename type_complete> auto observe(type_next func_next, type_complete func_complete)
 	{
-		struct receiver_imp
-		{
-			type_next next_func;
-			type_complete complete_func;
-
-			using T = typename std::decay< details::lambda_first_argument<type_next>::type >::type;
-			status next(T arg)
-			{
-				return next_func(arg);
-			}
-
-			void complete()
-			{
-				complete_func();
-			}
-		};
-		return receiver_imp{func_next, func_complete};
+		return details::receiver_imp<type_next, type_complete>(std::move(func_next), std::move(func_complete));
 	}
-	template <typename type_next> auto simple_receiver(type_next func_next)
+
+	// void(T) 
+	// void(T&&)
+	// void(const T&)
+	// status(T)
+	// status(T&&) 
+	// status(const T&)
+	template <typename type_next> auto observe(type_next func_next)
 	{
-		struct receiver_imp
-		{
-			type_next next_func;
-			using T = typename std::decay< details::lambda_first_argument<type_next>::type >::type;
-			status next(T arg)
-			{
-				next_func(std::forward<T>(arg));
-				return status::open;
-			}
-			void complete() {}
-		};
-		return receiver_imp{func_next};
+		return details::simple_receiver_imp(std::move(func_next));
 	}
 };
