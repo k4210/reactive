@@ -5,14 +5,6 @@
 #include <vector>
 #include <assert.h>
 
-namespace reactive
-{
-	enum class status
-	{
-		open,
-		closed,
-		error
-	};
 /*
 	template <class T> struct observer
 	{
@@ -31,95 +23,22 @@ namespace reactive
 	};
 */
 
-// OBSERVABLE
-	struct range
+namespace reactive
+{
+	enum class status
 	{
-		int stop = 0;
-
-		range(int in_stop)
-			: stop(in_stop) {}
-
-		std::function<status(int)> next;
-		std::function<void()> complete;
-
-		void unsubscribe()
-		{
-			next = nullptr;
-			complete = nullptr;
-			stop = 0;
-		}
-		void start()
-		{
-			assert(next);
-			assert(complete);
-			for (int it = 0; it < stop; ++it)
-			{
-				if (next(it) != status::open)
-				{
-					unsubscribe();
-					return;
-				}
-			}
-
-			complete();
-		}
-		template<typename type_inner_observer> void subscribe(type_inner_observer& observer)
-		{
-			assert(!next);
-			assert(!complete);
-			next = [&observer](int val) -> status { return observer.next(val); };
-			complete = [&observer]() { observer.complete(); };
-		}
+		open,
+		closed,
+		error
 	};
 
-	template<typename T>
-	struct repeater
-	{
-		int stop = 0;
-		T val;
-
-		repeater(int in_stop, T v) : stop(in_stop), val(std::move(v)) {}
-
-		std::function<status(T)> next;
-		std::function<void()> complete;
-
-		void unsubscribe()
-		{
-			next = nullptr;
-			complete = nullptr;
-			stop = 0;
-		}
-		void start()
-		{
-			assert(next);
-			assert(complete);
-			for (int it = 0; it < stop; ++it)
-			{
-				if (next(val) != status::open)
-				{
-					unsubscribe();
-					return;
-				}
-			}
-
-			complete();
-		}
-		template<typename type_inner_observer> void subscribe(type_inner_observer& observer)
-		{
-			assert(!next);
-			assert(!complete);
-			next = [&observer](T val){ return observer.next(std::move(val)); };
-			complete = [&observer]() { observer.complete(); };
-		}
-	};
-//
 	namespace details
 	{
 		template<typename F, typename Ret, typename A, typename... Rest> A helper_first(Ret(F::*)(A, Rest...));
 		template<typename F, typename Ret, typename A, typename... Rest> A helper_first(Ret(F::*)(A, Rest...) const);
 		template<typename F, typename Ret, typename A, typename B, typename... Rest> B helper_sec(Ret(F::*)(A, B, Rest...));
 		template<typename F, typename Ret, typename A, typename B, typename... Rest> B helper_sec(Ret(F::*)(A, B, Rest...) const);
-		template<typename F> struct lambda_first_argument 
+		template<typename F> struct lambda_first_argument
 		{
 			typedef decltype(helper_first(&F::operator())) type;
 		};
@@ -132,30 +51,42 @@ namespace reactive
 			typedef decltype(helper_first(&F::next)) type;
 		};
 
+		template<typename type_inner_observer> struct base_block
+		{
+			type_inner_observer observer;
+			
+			void complete() { observer.complete(); }
+			template<typename type_final_observer> void subscribe(type_final_observer& final_observer)
+			{
+				observer.subscribe(final_observer);
+			}
+			void unsubscribe()
+			{
+				observer.unsubscribe();
+			}
 
-		template <typename type_func> struct filter_imp
+			base_block(type_inner_observer&& in_observer) : observer(std::move(in_observer)) {}
+			base_block(base_block&& in_block) : observer(std::move(in_block.observer)) {}
+		};
+
+		template <typename type_func> struct filter_block
 		{
 			type_func func;
 
-			template<typename type_inner_observer> struct composite_observer
+			template<typename type_inner_observer> struct composite_observer : public base_block<type_inner_observer>
 			{
-				type_inner_observer observer;
-				void complete() { observer.complete(); }
 				using T = typename observer_argument<type_inner_observer>::type;
+				using super = typename base_block<type_inner_observer>;
 
 				type_func func;
-
+				
 				status next(T arg)
 				{
-					return func(arg) ? observer.next(std::move(arg)) : status::open;
+					return func(arg) ? super::observer.next(std::move(arg)) : status::open;
 				}
-			};
 
-			template<typename type_inner_observer>
-			auto operator |=(type_inner_observer&& inner_observer)&
-			{
-				return composite_observer<type_inner_observer>{std::move(inner_observer), func};
-			}
+				composite_observer(type_inner_observer&& in_block, type_func&& in_func) : super(std::move(in_block)), func(in_func) {}
+			};
 
 			template<typename type_inner_observer>
 			auto operator |=(type_inner_observer&& inner_observer)&&
@@ -168,25 +99,26 @@ namespace reactive
 		{
 			unsigned int num = 1;
 
-			template<typename type_inner_observer> struct composite_observer
+			template<typename type_inner_observer> struct composite_observer : public base_block<type_inner_observer>
 			{
-				type_inner_observer observer;
-				void complete() { observer.complete(); }
 				using T = typename observer_argument<type_inner_observer>::type;
+				using super = typename base_block<type_inner_observer>;
 
 				unsigned int num = 1;
 
 				status next(T arg)
 				{
-					const status result = observer.next(std::move(arg));
+					const status result = super::observer.next(std::move(arg));
 					assert(num);
 					if (--num == 0)
 					{
-						observer.complete();
+						super::observer.complete();
 						return status::closed;
 					}
 					return result;
 				}
+
+				composite_observer(type_inner_observer&& in_block, unsigned int in_num) : super(std::move(in_block)), num(in_num) {}
 			};
 
 			template<typename type_inner_observer> auto operator |=(type_inner_observer&& inner_observer)
@@ -199,26 +131,20 @@ namespace reactive
 		{
 			type_func func;
 
-			template<typename type_inner_observer> struct composite_observer
+			template<typename type_inner_observer> struct composite_observer : public base_block<type_inner_observer>
 			{
-				type_inner_observer observer;
-				void complete() { observer.complete(); }
-
-				using T = typename lambda_first_argument< type_func >::type;
+				using T = typename lambda_first_argument<type_func>::type;
+				using super = typename base_block<type_inner_observer>;
 
 				type_func func;
 
 				status next(T arg)
 				{
-					return observer.next(func(arg));
+					return super::observer.next(func(std::forward<T>(arg)));
 				}
-			};
 
-			template<typename type_inner_observer>
-			auto operator |=(type_inner_observer&& inner_observer)&
-			{
-				return composite_observer<type_inner_observer>{std::move(inner_observer), func};
-			}
+				composite_observer(type_inner_observer&& in_block, type_func&& in_func) : super(std::move(in_block)), func(std::move(in_func)) {}
+			};
 
 			template<typename type_inner_observer>
 			auto operator |=(type_inner_observer&& inner_observer)&&
@@ -229,10 +155,10 @@ namespace reactive
 
 		struct last_imp
 		{
-			template<typename type_inner_observer> struct composite_observer
+			template<typename type_inner_observer> struct composite_observer : public base_block<type_inner_observer>
 			{
-				type_inner_observer observer;
 				using T = typename observer_argument<type_inner_observer>::type;
+				using super = typename base_block<type_inner_observer>;
 
 				std::optional<T> last_val;
 
@@ -246,11 +172,13 @@ namespace reactive
 				{
 					if (last_val)
 					{
-						observer.next(std::move(*last_val));
+						super::observer.next(std::move(*last_val));
 						last_val.reset();
 					}
-					observer.complete();
+					super::observer.complete();
 				}
+
+				composite_observer(type_inner_observer&& in_block) : super(std::move(in_block)) {}
 			};
 
 			template<typename type_inner_observer>
@@ -265,10 +193,9 @@ namespace reactive
 			type_func func;
 			T initial_val;
 
-			template<typename type_inner_observer> struct composite_observer
+			template<typename type_inner_observer> struct composite_observer : public base_block<type_inner_observer>
 			{
-				type_inner_observer observer;
-				void complete() { observer.complete(); }
+				using super = typename base_block<type_inner_observer>;
 
 				type_func func;
 				T val;
@@ -276,20 +203,17 @@ namespace reactive
 				status next(T arg)
 				{
 					val = func(val, arg);
-					return observer.next(val);
+					return super::observer.next(val);
 				}
-			};
 
-			template<typename type_inner_observer>
-			auto operator |=(type_inner_observer&& inner_observer)&
-			{
-				return composite_observer<type_inner_observer>{std::move(inner_observer), func, initial_val};
-			}
+				composite_observer(type_inner_observer&& in_block, type_func&& in_func, T&& in_val) 
+					: super(std::move(in_block)), func(std::move(in_func)), val(std::move(in_val)) {}
+			};
 
 			template<typename type_inner_observer>
 			auto operator |=(type_inner_observer&& inner_observer)&&
 			{
-				return composite_observer<type_inner_observer>{std::move(inner_observer), std::move(func), std::move(initial_val)};
+				return composite_observer<type_inner_observer>(std::move(inner_observer), std::move(func), std::move(initial_val));
 			}
 		};
 
@@ -318,6 +242,17 @@ namespace reactive
 					assert(common_observer);
 					common_observer->complete();
 				}
+
+				template<typename type_final_observer> void subscribe(type_final_observer& final_observer)
+				{
+					assert(common_observer);
+					common_observer->subscribe(final_observer);
+				}
+				void unsubscribe()
+				{
+					assert(common_observer);
+					common_observer->unsubscribe();
+				}
 			};
 
 			template<typename type_inner_observer> struct composite_observer_common
@@ -345,6 +280,15 @@ namespace reactive
 						observer.complete();
 					}
 				}
+
+				template<typename type_final_observer> void subscribe(type_final_observer& final_observer)
+				{
+					observer.subscribe(final_observer);
+				}
+				void unsubscribe()
+				{
+					observer.unsubscribe();
+				}
 			};
 
 			template<typename type_inner_observer>
@@ -360,17 +304,17 @@ namespace reactive
 		struct group_imp
 		{
 			const unsigned int num;
-			
-			template<typename type_inner_observer> struct composite_observer
-			{
-				type_inner_observer observer;
-				const unsigned int num;
 
+			template<typename type_inner_observer> struct composite_observer : public base_block<type_inner_observer>
+			{
 				using T = typename observer_argument<type_inner_observer>::type::value_type;
+				using super = typename base_block<type_inner_observer>;
+
+				const unsigned int num;
 				std::vector<T> v;
 
 				composite_observer(type_inner_observer&& in_o, unsigned int in_num)
-					: observer(std::move(in_o)), num(in_num)
+					: super(std::move(in_o)), num(in_num)
 				{
 					v.reserve(num);
 				}
@@ -380,7 +324,7 @@ namespace reactive
 					v.push_back(std::move(arg));
 					if (v.size() == num)
 					{
-						const status result = observer.next(std::move(v));
+						const status result = super::observer.next(std::move(v));
 						v.clear();
 						v.reserve(num);
 						return result;
@@ -392,10 +336,10 @@ namespace reactive
 				{
 					if (v.size())
 					{
-						observer.next(std::move(v));
+						super::observer.next(std::move(v));
 						v.clear();
 					}
-					observer.complete();
+					super::observer.complete();
 				}
 			};
 
@@ -407,27 +351,23 @@ namespace reactive
 
 		struct split_imp
 		{
-			template<typename type_inner_observer> struct composite_observer
+			template<typename type_inner_observer> struct composite_observer : public base_block<type_inner_observer>
 			{
-				type_inner_observer observer;
-
 				using T = typename observer_argument<type_inner_observer>::type;
+				using super = typename base_block<type_inner_observer>;
 
 				status next(std::vector<T> arg)
 				{
-					for(auto& val : arg)
+					for (auto& val : arg)
 					{
-						const status result = observer.next(std::move(val));
+						const status result = super::observer.next(std::move(val));
 						if (result != status::open)
 							return result;
 					}
 					return status::open;
 				}
 
-				void complete()
-				{
-					observer.complete();
-				}
+				composite_observer(type_inner_observer&& in_block) : super(std::move(in_block)){}
 			};
 
 			template<typename type_inner_observer> auto operator |=(type_inner_observer&& inner_observer)
@@ -471,9 +411,136 @@ namespace reactive
 			receiver_imp(type_next&& in_next, type_complete&& in_complete)
 				: simple_receiver_imp(in_next), complete_func(in_complete) {}
 		};
+
+		struct range_imp
+		{
+			unsigned int stop = 0;
+
+			template<typename type_observable_block> struct imp
+			{
+				type_observable_block block;
+
+				template<typename type_inner_observer> void subscribe(type_inner_observer& observer)
+				{
+					block.subscribe(observer);
+				}
+				void unsubscribe()
+				{
+					block.unsubscribe();
+				}
+
+				unsigned int stop = 0;
+				void start()
+				{
+					for (int it = 0; it < static_cast<int>(stop); ++it)
+					{
+						if (block.next(it) != status::open)
+						{
+							return;
+						}
+					}
+
+					block.complete();
+				}
+			};
+
+			template<typename type_observable_block>
+			auto operator |=(type_observable_block&& inner_observer)
+			{
+				return imp<type_observable_block>{ std::move(inner_observer), stop };
+			}
+		};
+
+		template<typename T> struct repeater_imp
+		{
+			unsigned int num;
+			T value;
+
+			template<typename type_observable_block> struct imp
+			{
+				type_observable_block block;
+				unsigned int num = 0;
+				T value;
+
+				template<typename type_inner_observer> void subscribe(type_inner_observer& observer)
+				{
+					block.subscribe(observer);
+				}
+				void unsubscribe()
+				{
+					block.unsubscribe();
+				}
+
+				void start()
+				{
+					for (unsigned int it = 0; it < num; ++it)
+					{
+						if (block.next(value) != status::open)
+						{
+							return;
+						}
+					}
+					block.complete();
+				}
+			};
+
+			template<typename type_observable_block>
+			auto operator |=(type_observable_block&& inner_observer)&&
+			{
+				return imp<type_observable_block>{ std::move(inner_observer), num, std::move(value) };
+			}
+		};
 	}
 
-// MODIFIERS
+// OBSERVABLE
+	auto range(unsigned int num)
+	{
+		return details::range_imp{ num };
+	}
+
+	template<typename T> auto repeater(unsigned int num, T value)
+	{
+		return details::repeater_imp<T>{ num, std::move(value) };
+	}
+
+// ???
+	template<typename T> struct single_cast_imp
+	{
+		std::function<status(T)> func_next;
+		std::function<void()> func_complete;
+
+		status next(T arg)
+		{
+			assert(func_next);
+			return func_next(std::move(arg));
+		}
+
+		void complete()
+		{
+			assert(func_complete);
+			func_complete();
+		}
+
+		template<typename type_inner_observer> void subscribe(type_inner_observer& observer)
+		{
+			assert(!func_next);
+			assert(!func_complete);
+			func_next = [&observer](T val) { return observer.next(std::move(val)); };
+			func_complete = [&observer]() { observer.complete(); };
+		}
+
+		void unsubscribe()
+		{
+			func_next = nullptr;
+			func_complete = nullptr;
+		}
+	};
+
+	template<typename T> auto single_cast()
+	{
+		return single_cast_imp<T>{};
+	}
+//BLOCKS
 	auto take(unsigned int num)
 	{
 		return details::take_imp{ num };
@@ -496,7 +563,7 @@ namespace reactive
 	
 	template <typename type_func> auto filter(type_func&& func)
 	{
-		return details::filter_imp<type_func>{func};
+		return details::filter_block<type_func>{func};
 	}
 
 	template <typename type_func> auto transform(type_func&& func)
@@ -521,7 +588,6 @@ namespace reactive
 	}
 
 // OBSERVER
-
 	template <typename type_next, typename type_complete> auto observe(type_next func_next, type_complete func_complete)
 	{
 		return details::receiver_imp<type_next, type_complete>(std::move(func_next), std::move(func_complete));
