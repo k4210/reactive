@@ -31,6 +31,37 @@ namespace reactive
 		closed,
 		error
 	};
+	
+	namespace details
+	{
+		template<typename R> struct single_cast_imp;
+	};
+
+	template<typename T> struct observable_ref
+	{
+	private:
+		template<typename R> friend struct details::single_cast_imp;
+		details::single_cast_imp<T>* ref;
+		observable_ref(details::single_cast_imp<T>* in) : ref(in) { assert(ref); }
+
+	public:
+		template<typename type_inner_observer> void subscribe(type_inner_observer& observer)
+		{
+			assert(ref);
+			ref->subscribe<type_inner_observer>(observer);
+		}
+
+		void unsubscribe()
+		{
+			assert(ref);
+			ref->unsubscribe();
+		}
+
+		observable_ref(const observable_ref&) = default;
+		observable_ref(observable_ref&&) = default;
+		observable_ref& operator= (observable_ref&&) = default;
+		observable_ref& operator= (const observable_ref&) = default;
+	};
 
 	namespace details
 	{
@@ -63,6 +94,11 @@ namespace reactive
 			void unsubscribe()
 			{
 				observer.unsubscribe();
+			}
+
+			template<typename R> observable_ref<R> get_observable_ref()
+			{
+				return observer.get_observable_ref<R>();
 			}
 
 			base_block(type_inner_observer&& in_observer) : observer(std::move(in_observer)) {}
@@ -253,6 +289,12 @@ namespace reactive
 					assert(common_observer);
 					common_observer->unsubscribe();
 				}
+
+				template<typename R> observable_ref<R> get_observable_ref()
+				{
+					assert(common_observer);
+					return common_observer->get_observable_ref<R>();
+				}
 			};
 
 			template<typename type_inner_observer> struct composite_observer_common
@@ -288,6 +330,11 @@ namespace reactive
 				void unsubscribe()
 				{
 					observer.unsubscribe();
+				}
+
+				template<typename R> observable_ref<R> get_observable_ref()
+				{
+					return observer.get_observable_ref<R>();
 				}
 			};
 
@@ -442,6 +489,11 @@ namespace reactive
 
 					block.complete();
 				}
+
+				template<typename R> observable_ref<R> get_observable_ref()
+				{
+					return block.get_observable_ref<R>();
+				}
 			};
 
 			template<typename type_observable_block>
@@ -482,12 +534,56 @@ namespace reactive
 					}
 					block.complete();
 				}
+
+				template<typename R> observable_ref<R> get_observable_ref()
+				{
+					return block.get_observable_ref<R>();
+				}
 			};
 
 			template<typename type_observable_block>
 			auto operator |=(type_observable_block&& inner_observer)&&
 			{
 				return imp<type_observable_block>{ std::move(inner_observer), num, std::move(value) };
+			}
+		};
+
+		template<typename T> struct single_cast_imp
+		{
+			std::function<status(T)> func_next;
+			std::function<void()> func_complete;
+
+			status next(T arg)
+			{
+				assert(func_next);
+				return func_next(std::move(arg));
+			}
+
+			void complete()
+			{
+				assert(func_complete);
+				func_complete();
+			}
+
+			template<typename type_inner_observer> void subscribe(type_inner_observer& observer)
+			{
+				assert(!func_next);
+				assert(!func_complete);
+				func_next = [&observer](T val) { return observer.next(std::move(val)); };
+				func_complete = [&observer]() { observer.complete(); };
+			}
+
+			void unsubscribe()
+			{
+				func_next = nullptr;
+				func_complete = nullptr;
+			}
+
+			template<typename R>
+			struct observable_ref<R> get_observable_ref()
+			{
+				static_assert(std::is_same_v<T, R>);
+				return observable_ref<R>{this};
 			}
 		};
 	}
@@ -504,42 +600,11 @@ namespace reactive
 	}
 
 // ???
-	template<typename T> struct single_cast_imp
-	{
-		std::function<status(T)> func_next;
-		std::function<void()> func_complete;
-
-		status next(T arg)
-		{
-			assert(func_next);
-			return func_next(std::move(arg));
-		}
-
-		void complete()
-		{
-			assert(func_complete);
-			func_complete();
-		}
-
-		template<typename type_inner_observer> void subscribe(type_inner_observer& observer)
-		{
-			assert(!func_next);
-			assert(!func_complete);
-			func_next = [&observer](T val) { return observer.next(std::move(val)); };
-			func_complete = [&observer]() { observer.complete(); };
-		}
-
-		void unsubscribe()
-		{
-			func_next = nullptr;
-			func_complete = nullptr;
-		}
-	};
-
 	template<typename T> auto single_cast()
 	{
-		return single_cast_imp<T>{};
+		return details::single_cast_imp<T>{};
 	}
+
 //BLOCKS
 	auto take(unsigned int num)
 	{

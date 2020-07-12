@@ -36,18 +36,21 @@ int main()
 			|= single_cast<int>();
 
 		auto my_filter = take(12) |= filter([](int i) { return (i % 4) == 0; }) |= single_cast<int>();
-		//auto my_filter2 = take(12) |= filter([](int i) { return (i % 4) == 0; });
 		
+		observable_ref<int> o_ref = observable.get_observable_ref<int>();
+		if(move_counter)
+		{
+			observable.subscribe(my_filter);
+			o_ref = my_filter.get_observable_ref<int>();
+		}
+
 		auto observer = transform([](int i) -> float { return static_cast<float>(i) + 0.5f; })
 			|= group(8)
 			|= last()
 			|= split()
 			|= observe([](float i) { cout << i << "\n"; });
+		o_ref.subscribe(observer);
 
-		{
-			my_filter.subscribe(observer);
-			observable.subscribe(my_filter);
-		}
 		observable.start();
 		observable2.start();
 		observable.unsubscribe();
@@ -90,3 +93,21 @@ int main()
 	}
 	*/
 }
+
+/*
+Observer:
+	ends with observe
+	API: next, complete
+
+Observable:
+	starts with a generator
+	API: subscribe
+
+Task: 
+	starts with a generator 
+	ends with observe
+	API: start, stop, is_started
+
+Block:
+	|=	
+*/
